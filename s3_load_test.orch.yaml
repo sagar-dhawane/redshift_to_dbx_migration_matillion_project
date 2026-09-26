@@ -1,0 +1,126 @@
+type: "orchestration"
+version: "1.0"
+pipeline:
+  metadata:
+    description: "Detects S3 parquet schema, checks if target table exists, creates it if needed, then loads data"
+  components:
+    Start:
+      type: "start"
+      transitions:
+        unconditional:
+        - "Detect S3 Schema"
+      parameters:
+        componentName: "Start"
+    Detect S3 Schema:
+      type: "sql-executor"
+      transitions:
+        success:
+        - "Check Table Exists"
+      parameters:
+        componentName: "Detect S3 Schema"
+        scriptLocation: "Component"
+        sqlScript: |
+          CREATE OR REPLACE TEMP VIEW s3_parquet_schema AS
+          SELECT * FROM parquet.`s3://amzn-demo-s3-100/orders.parquet` LIMIT 0
+    Check Table Exists:
+      type: "query-to-scalar"
+      transitions:
+        success:
+        - "If Table Exists"
+      parameters:
+        componentName: "Check Table Exists"
+        mode: "Advanced"
+        query: |
+          SELECT COUNT(*) AS table_count
+          FROM redshift_matillion_dbx_v2.information_schema.tables
+          WHERE table_schema = 'healthcare_matillion_redshift'
+            AND table_name = 'sample_orders'
+        scalarVariableMapping:
+        - - "v_table_exists"
+          - "table_count"
+    If Table Exists:
+      type: "if"
+      transitions:
+        "true":
+        - "Converge"
+        "false":
+        - "Create Table From Schema"
+      parameters:
+        componentName: "If Table Exists"
+        mode: "Simple"
+        condition:
+        - - "v_table_exists"
+          - "Is"
+          - "Greater than or equal to"
+          - "1"
+        combineConditions: "And"
+    Create Table From Schema:
+      type: "sql-executor"
+      transitions:
+        success:
+        - "Converge"
+      parameters:
+        componentName: "Create Table From Schema"
+        scriptLocation: "Component"
+        sqlScript: |
+          CREATE TABLE redshift_matillion_dbx_v2.healthcare_matillion_redshift.sample_orders
+          AS SELECT * FROM s3_parquet_schema WHERE 1=0
+    Converge:
+      type: "or"
+      transitions:
+        unconditional:
+        - "S3 Load"
+      parameters:
+        componentName: "Converge"
+    S3 Load:
+      type: "s3-load-v2"
+      parameters:
+        componentName: "S3 Load"
+        location: "s3://amzn-demo-s3-100"
+        pattern: "orders.parquet"
+        catalog: "redshift_matillion_dbx_v2"
+        schema: "healthcare_matillion_redshift"
+        table: "sample_orders"
+        loadColumns:
+        fileType: "PARQUET"
+        recursiveFileLookup:
+        forceLoad:
+        mergeSchema:
+  variables:
+    v_table_exists:
+      metadata:
+        type: "NUMBER"
+        description: "1 if target table exists, 0 otherwise"
+        scope: "COPIED"
+        visibility: "PRIVATE"
+      defaultValue: "0"
+design:
+  components:
+    Start:
+      position:
+        x: -480
+        "y": -40
+    Detect S3 Schema:
+      position:
+        x: -320
+        "y": -40
+    Check Table Exists:
+      position:
+        x: -120
+        "y": -40
+    If Table Exists:
+      position:
+        x: 80
+        "y": -40
+    Create Table From Schema:
+      position:
+        x: 240
+        "y": 40
+    Converge:
+      position:
+        x: 400
+        "y": -40
+    S3 Load:
+      position:
+        x: 560
+        "y": -40
