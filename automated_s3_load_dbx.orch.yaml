@@ -2,7 +2,9 @@ type: "orchestration"
 version: "1.0"
 pipeline:
   metadata:
-    description: "Detects S3 parquet schema, checks if target table exists, creates it if needed, then loads data"
+    description: "Parameterized pipeline: detects S3 file schema, checks if target\
+      \ table exists, creates it if needed, then loads data. Override variables to\
+      \ load any file."
   components:
     Start:
       type: "start"
@@ -19,9 +21,10 @@ pipeline:
       parameters:
         componentName: "Detect S3 Schema"
         scriptLocation: "Component"
+        enableVariableResolution: "Yes"
         sqlScript: |
-          CREATE OR REPLACE TEMP VIEW s3_parquet_schema AS
-          SELECT * FROM parquet.`s3://amzn-demo-s3-100/orders.parquet` LIMIT 0
+          CREATE OR REPLACE TEMP VIEW s3_file_schema AS
+          SELECT * FROM ${p_file_format}.`${p_s3_location}/${p_file_name}` LIMIT 0
     Check Table Exists:
       type: "query-to-scalar"
       transitions:
@@ -32,9 +35,9 @@ pipeline:
         mode: "Advanced"
         query: |
           SELECT COUNT(*) AS table_count
-          FROM redshift_matillion_dbx_v2.information_schema.tables
-          WHERE table_schema = 'healthcare_matillion_redshift'
-            AND table_name = 'sample_orders'
+          FROM ${p_catalog}.information_schema.tables
+          WHERE table_schema = '${p_schema}'
+            AND table_name = '${p_table}'
         scalarVariableMapping:
         - - "v_table_exists"
           - "table_count"
@@ -62,9 +65,10 @@ pipeline:
       parameters:
         componentName: "Create Table From Schema"
         scriptLocation: "Component"
+        enableVariableResolution: "Yes"
         sqlScript: |
-          CREATE TABLE redshift_matillion_dbx_v2.healthcare_matillion_redshift.sample_orders
-          AS SELECT * FROM s3_parquet_schema WHERE 1=0
+          CREATE TABLE ${p_catalog}.${p_schema}.${p_table}
+          AS SELECT * FROM s3_file_schema WHERE 1=0
     Converge:
       type: "or"
       transitions:
@@ -76,17 +80,59 @@ pipeline:
       type: "s3-load-v2"
       parameters:
         componentName: "S3 Load"
-        location: "s3://amzn-demo-s3-100"
-        pattern: "orders.parquet"
-        catalog: "redshift_matillion_dbx_v2"
-        schema: "healthcare_matillion_redshift"
-        table: "sample_orders"
+        location: "${p_s3_location}"
+        pattern: "${p_file_name}"
+        catalog: "${p_catalog}"
+        schema: "${p_schema}"
+        table: "${p_table}"
         loadColumns:
-        fileType: "PARQUET"
+        fileType: "${p_file_format}"
         recursiveFileLookup:
         forceLoad:
         mergeSchema:
   variables:
+    p_s3_location:
+      metadata:
+        type: "TEXT"
+        description: "S3 bucket and path (e.g. s3://my-bucket/path)"
+        scope: "COPIED"
+        visibility: "PUBLIC"
+      defaultValue: "s3://amzn-demo-s3-100"
+    p_file_name:
+      metadata:
+        type: "TEXT"
+        description: "File name or pattern to load"
+        scope: "COPIED"
+        visibility: "PUBLIC"
+      defaultValue: "orders.parquet"
+    p_file_format:
+      metadata:
+        type: "TEXT"
+        description: "File format: PARQUET, CSV, JSON, or AVRO"
+        scope: "COPIED"
+        visibility: "PUBLIC"
+      defaultValue: "PARQUET"
+    p_catalog:
+      metadata:
+        type: "TEXT"
+        description: "Target Databricks catalog"
+        scope: "COPIED"
+        visibility: "PUBLIC"
+      defaultValue: "redshift_matillion_dbx_v2"
+    p_schema:
+      metadata:
+        type: "TEXT"
+        description: "Target schema name"
+        scope: "COPIED"
+        visibility: "PUBLIC"
+      defaultValue: "healthcare_matillion_redshift"
+    p_table:
+      metadata:
+        type: "TEXT"
+        description: "Target table name"
+        scope: "COPIED"
+        visibility: "PUBLIC"
+      defaultValue: "sample_orders"
     v_table_exists:
       metadata:
         type: "NUMBER"
@@ -100,27 +146,34 @@ design:
       position:
         x: -480
         "y": -40
+      tempMetlId:
     Detect S3 Schema:
       position:
         x: -320
         "y": -40
+      tempMetlId:
     Check Table Exists:
       position:
         x: -120
         "y": -40
+      tempMetlId:
     If Table Exists:
       position:
         x: 80
         "y": -40
+      tempMetlId:
     Create Table From Schema:
       position:
         x: 240
         "y": 40
+      tempMetlId:
     Converge:
       position:
         x: 400
         "y": -40
+      tempMetlId:
     S3 Load:
       position:
-        x: 560
+        x: 570
         "y": -40
+      tempMetlId:
