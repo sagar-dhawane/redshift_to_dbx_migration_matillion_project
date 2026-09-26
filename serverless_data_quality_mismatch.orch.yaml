@@ -1,0 +1,104 @@
+type: "orchestration"
+version: "1.0"
+pipeline:
+  components:
+    Start:
+      type: "start"
+      transitions:
+        unconditional:
+        - "Fetch Table List"
+      parameters:
+        componentName: "Start"
+    Fetch Table List:
+      type: "database-query"
+      transitions:
+        success:
+        - "Table Iterator"
+      parameters:
+        componentName: "Fetch Table List"
+        basicAdvancedMode: "Advanced"
+        databaseType: "Amazon Redshift"
+        connectionUrl: "jdbc:redshift://redshift-to-dbx-new.134250568099.us-east-1.redshift-serverless.amazonaws.com:5439/dbx_schema"
+        username: "admin"
+        password: "redshift_serverless_password_new"
+        connectionOptions:
+        sqlQuery: |
+          SELECT table_name FROM information_schema.tables WHERE table_schema = 'ecommerce'
+        fetchSize:
+        catalog: "redshift_matillion_dbx_v2"
+        database2: "healthcare_matillion_redshift"
+        table: "table_list"
+        stagePlatform1: "AWS S3"
+        loadOptions:
+        sshTunnel:
+        s3StagingArea: "amzn-demo-s3-100"
+        encryption: "None"
+        concurrency: "2"
+    Table Iterator:
+      type: "table-iterator"
+      iterationTarget: "Load Table"
+      parameters:
+        componentName: "Table Iterator"
+        mode: "Basic"
+        catalog: "redshift_matillion_dbx_v2"
+        schema: "healthcare_matillion_redshift"
+        targetTable: "table_list"
+        concurrency: "Sequential"
+        columnMapping:
+        - - "table_name"
+          - "v_table_name"
+        orderBy:
+        sort: "Ascending"
+        breakOnFailure: "No"
+    Load Table:
+      type: "database-query"
+      parameters:
+        componentName: "Load Table"
+        basicAdvancedMode: "Advanced"
+        databaseType: "Amazon Redshift"
+        connectionUrl: "jdbc:redshift://redshift-to-dbx-new.134250568099.us-east-1.redshift-serverless.amazonaws.com:5439/dbx_schema"
+        username: "admin"
+        password: "redshift_serverless_password_new"
+        connectionOptions:
+        sqlQuery: |
+          SELECT * FROM ecommerce.${v_table_name}
+        fetchSize:
+        catalog: "redshift_matillion_dbx_v2"
+        database2: "healthcare_matillion_redshift"
+        table: "${v_table_name}"
+        stagePlatform1: "AWS S3"
+        loadOptions:
+        sshTunnel:
+        s3StagingArea: "amzn-demo-s3-100"
+        encryption: "None"
+        concurrency: "2"
+  variables:
+    v_table_name:
+      metadata:
+        type: "TEXT"
+        description: "Current Redshift table name during iteration"
+        scope: "COPIED"
+        visibility: "PRIVATE"
+      defaultValue: "addresses"
+design:
+  components:
+    Start:
+      position:
+        x: -390
+        "y": -230
+      tempMetlId:
+    Fetch Table List:
+      position:
+        x: -110
+        "y": -230
+      tempMetlId:
+    Table Iterator:
+      position:
+        x: 10
+        "y": -250
+      tempMetlId:
+    Load Table:
+      position:
+        x: 10
+        "y": -250
+      tempMetlId:
