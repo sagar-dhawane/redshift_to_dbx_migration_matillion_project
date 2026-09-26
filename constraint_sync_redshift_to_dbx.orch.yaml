@@ -1,0 +1,212 @@
+type: "orchestration"
+version: "1.0"
+pipeline:
+  metadata:
+    description: "Extracts constraints from Redshift ecommerce schema and applies\
+      \ them to Databricks tables (PK, FK, UNIQUE, NOT NULL)"
+    origin: "maia-01a0cd23-338f-736f-8795-8a8c45aa363b"
+  components:
+    Start:
+      type: "start"
+      transitions:
+        unconditional:
+        - "Fetch Constraints"
+      parameters:
+        componentName: "Start"
+    Fetch Constraints:
+      type: "database-query"
+      transitions:
+        success:
+        - "Constraint Iterator"
+      parameters:
+        componentName: "Fetch Constraints"
+        basicAdvancedMode: "Advanced"
+        databaseType: "Amazon Redshift"
+        connectionUrl: "jdbc:redshift://wgroup-matillion-dbx.134250568099.us-east-1.redshift-serverless.amazonaws.com:5439/healthcare"
+        username: "admin"
+        password: "redshift_serverless_password_new"
+        connectionOptions:
+        sqlQuery: |
+          WITH expanded AS (
+            SELECT
+              cls.relname AS table_name,
+              con.conname AS constraint_name,
+              CASE con.contype
+                WHEN 'p' THEN 'PRIMARY KEY'
+                WHEN 'u' THEN 'UNIQUE'
+                WHEN 'f' THEN 'FOREIGN KEY'
+              END AS constraint_type,
+              a1.attname AS col1,
+              a2.attname AS col2,
+              a3.attname AS col3,
+              COALESCE(ref_cls.relname, '') AS ref_table,
+              COALESCE(ref_a.attname, '') AS ref_column
+            FROM pg_constraint con
+            JOIN pg_class cls ON con.conrelid = cls.oid
+            JOIN pg_namespace nsp ON cls.relnamespace = nsp.oid
+            LEFT JOIN pg_attribute a1 ON a1.attrelid = cls.oid AND a1.attnum = con.conkey[1]
+            LEFT JOIN pg_attribute a2 ON a2.attrelid = cls.oid AND a2.attnum = con.conkey[2]
+            LEFT JOIN pg_attribute a3 ON a3.attrelid = cls.oid AND a3.attnum = con.conkey[3]
+            LEFT JOIN pg_class ref_cls ON con.confrelid = ref_cls.oid
+            LEFT JOIN pg_attribute ref_a ON ref_a.attrelid = ref_cls.oid AND ref_a.attnum = con.confkey[1] AND con.contype = 'f'
+            WHERE nsp.nspname = 'ecommerce'
+              AND con.contype IN ('p', 'u', 'f')
+          ),
+          pk_uk_fk AS (
+            SELECT
+              table_name,
+              constraint_name,
+              constraint_type,
+              CASE
+                WHEN col3 IS NOT NULL THEN col1 || ',' || col2 || ',' || col3
+                WHEN col2 IS NOT NULL THEN col1 || ',' || col2
+                ELSE col1
+              END AS column_names,
+              ref_table,
+              ref_column
+            FROM expanded
+          ),
+          nn AS (
+            SELECT
+              c.relname AS table_name,
+              c.relname || '_' || a.attname || '_nn' AS constraint_name,
+              'NOT NULL' AS constraint_type,
+              a.attname AS column_names,
+              '' AS ref_table,
+              '' AS ref_column
+            FROM pg_attribute a
+            JOIN pg_class c ON a.attrelid = c.oid
+            JOIN pg_namespace n ON c.relnamespace = n.oid
+            WHERE n.nspname = 'ecommerce'
+              AND a.attnotnull = true
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+          )
+          SELECT * FROM pk_uk_fk
+          UNION ALL
+          SELECT * FROM nn
+        fetchSize:
+        catalog: "redshift_matillion_dbx_v2"
+        database2: "healthcare_matillion_redshift"
+        table: "constraint_metadata"
+        stagePlatform1: "AWS S3"
+        loadOptions:
+        sshTunnel:
+        s3StagingArea: "amzn-demo-s3-100"
+        encryption: "None"
+        concurrency: "2"
+    Constraint Iterator:
+      type: "table-iterator"
+      iterationTarget: "Apply Constraint"
+      parameters:
+        componentName: "Constraint Iterator"
+        mode: "Advanced"
+        query: |
+          SELECT table_name, constraint_name, constraint_type, column_names, ref_table, ref_column
+          FROM redshift_matillion_dbx_v2.healthcare_matillion_redshift.constraint_metadata
+          ORDER BY CASE constraint_type WHEN 'NOT NULL' THEN 1 WHEN 'PRIMARY KEY' THEN 2 WHEN 'UNIQUE' THEN 3 WHEN 'FOREIGN KEY' THEN 4 END, table_name
+        concurrency: "Sequential"
+        columnMapping1:
+        - - "table_name"
+          - "v_table_name"
+        - - "constraint_name"
+          - "v_constraint_name"
+        - - "constraint_type"
+          - "v_constraint_type"
+        - - "column_names"
+          - "v_column_names"
+        - - "ref_table"
+          - "v_ref_table"
+        - - "ref_column"
+          - "v_ref_column"
+        breakOnFailure: "No"
+    Apply Constraint:
+      type: "sql-executor"
+      parameters:
+        componentName: "Apply Constraint"
+        scriptLocation: "Component"
+        sqlScript: |
+          DECLARE OR REPLACE VARIABLE _drop STRING;
+          DECLARE OR REPLACE VARIABLE _add STRING;
+          SET VARIABLE _drop = CASE
+            WHEN '${v_constraint_type}' = 'NOT NULL' THEN
+              'SELECT 1'
+            ELSE
+              'ALTER TABLE redshift_matillion_dbx_v2.healthcare_matillion_redshift.${v_table_name} DROP CONSTRAINT IF EXISTS ${v_constraint_name} CASCADE'
+          END;
+          EXECUTE IMMEDIATE _drop;
+          SET VARIABLE _add = CASE
+            WHEN '${v_constraint_type}' = 'NOT NULL' THEN
+              'ALTER TABLE redshift_matillion_dbx_v2.healthcare_matillion_redshift.${v_table_name} ALTER COLUMN ${v_column_names} SET NOT NULL'
+            WHEN '${v_constraint_type}' = 'FOREIGN KEY' THEN
+              'ALTER TABLE redshift_matillion_dbx_v2.healthcare_matillion_redshift.${v_table_name} ADD CONSTRAINT ${v_constraint_name} FOREIGN KEY (${v_column_names}) REFERENCES redshift_matillion_dbx_v2.healthcare_matillion_redshift.${v_ref_table} (${v_ref_column})'
+            ELSE
+              'ALTER TABLE redshift_matillion_dbx_v2.healthcare_matillion_redshift.${v_table_name} ADD CONSTRAINT ${v_constraint_name} ${v_constraint_type} (${v_column_names})'
+          END;
+          EXECUTE IMMEDIATE _add;
+        enableVariableResolution: "Yes"
+  variables:
+    v_table_name:
+      metadata:
+        type: "TEXT"
+        description: "Current table name"
+        scope: "COPIED"
+        visibility: "PRIVATE"
+      defaultValue: ""
+    v_constraint_name:
+      metadata:
+        type: "TEXT"
+        description: "Constraint name from Redshift"
+        scope: "COPIED"
+        visibility: "PRIVATE"
+      defaultValue: ""
+    v_constraint_type:
+      metadata:
+        type: "TEXT"
+        description: "Constraint type (PRIMARY KEY, UNIQUE, FOREIGN KEY, NOT NULL)"
+        scope: "COPIED"
+        visibility: "PRIVATE"
+      defaultValue: ""
+    v_column_names:
+      metadata:
+        type: "TEXT"
+        description: "Comma-separated column names for the constraint"
+        scope: "COPIED"
+        visibility: "PRIVATE"
+      defaultValue: ""
+    v_ref_table:
+      metadata:
+        type: "TEXT"
+        description: "Referenced table for FK constraints"
+        scope: "COPIED"
+        visibility: "PRIVATE"
+      defaultValue: ""
+    v_ref_column:
+      metadata:
+        type: "TEXT"
+        description: "Referenced column for FK constraints"
+        scope: "COPIED"
+        visibility: "PRIVATE"
+      defaultValue: ""
+design:
+  components:
+    Start:
+      position:
+        x: -400
+        "y": -60
+      tempMetlId:
+    Fetch Constraints:
+      position:
+        x: -180
+        "y": -60
+      tempMetlId:
+    Constraint Iterator:
+      position:
+        x: 50
+        "y": -80
+      tempMetlId:
+    Apply Constraint:
+      position:
+        x: 50
+        "y": -80
+      tempMetlId:
